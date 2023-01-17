@@ -1,202 +1,212 @@
-/*
-  ESP32 Remote WiFi Servo Control
-  esp32-web-servo.ino
-  Control servo motor from web page
-  
-  Based upon example from Rui Santos
-  Random Nerd Tutorials
-  https://randomnerdtutorials.com/esp32-servo-motor-web-server-arduino-ide/
-  
-
-  DroneBot Workshop 2020
-  https://dronebotworkshop.com
-*/
-
+#include <Wire.h>
 #include <WiFi.h>
 #include <Adafruit_PWMServoDriver.h>
+#include <vector>
 
-Adafruit_PWMServoDriver pca9685 = Adafruit_PWMServoDriver(0x40);
+#define SERVOMIN 150
+#define SERVOMAX 600
+#define SERVO_FREQ 50
 
-
-
-
-#define SERVOMIN  80  // Minimum value
-#define SERVOMAX  600  // Maximum value
-
-// Define servo motor connections (expand as required)
-#define SER0  0   //Servo Motor 0 on connector 0
-#define SER1  1  //Servo Motor 1 on connector 12
-
-// Variables for Servo Motor positions (expand as required)
-int pwm0;
-int pwm1;
+std::vector<int> mapToServoRotation(int x, int y, int w, int h);
+std::vector<int> parseArray(WiFiClient client);
+void blinkCycle(), recvOneChar(), showNewData();
 
 
-
-// Network credentials
-const char* ssid     = "samspot_";
+const char* ssid = "samspot_";
 const char* password = "1223334444";
 
-// Web server on port 80 (http)
+int vert =  0;
+int hor = 0;
+
+int received;
+boolean newData = false;
+int turnTo = 90;
 WiFiServer server(80);
-
-// Variable to store the HTTP request
-String header;
-
-// Decode HTTP GET value
-String valueString = String(5);
-int pos1 = 0;
-int pos2 = 0;
-
-// Current time
-unsigned long currentTime = millis();
-// Previous time
-unsigned long previousTime = 0; 
-// Define timeout time in milliseconds (example: 2000ms = 2s)
-const long timeoutTime = 2000;
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 
 void setup() {
-    // Serial monitor setup
-  Serial.begin(9600);
+ 
+  Serial.begin(115200);
 
-  // Print to monitor
-  Serial.println("PCA9685 Servo Test");
-
-  // Initialize PCA9685
-  pca9685.begin();
-
-  // Set PWM Frequency to 50Hz
-  pca9685.setPWMFreq(50);
-
-
-  // Connect to Wi-Fi network with SSID and password
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+    delay(1000);
+    Serial.println("Connecting to WiFi...");
   }
-  // Print local IP address and start web server
-  Serial.println("");
-  Serial.println("WiFi connected.");
-  Serial.println("IP address: ");
-  Serial.println(WiFi.localIP());
+  Serial.println("Connected to WiFi");
+
   server.begin();
+  Serial.println("Server started");
+  Serial.print("Use this URL to connect: ");
+  Serial.print("http://");
+  Serial.print(WiFi.localIP());
+
+  pwm.begin();
+  pwm.setOscillatorFrequency(27000000);
+  pwm.setPWMFreq(SERVO_FREQ);  // Analog servos run at ~50 Hz updates
+
+  delay(10);
 }
 
-void loop(){
-  
-  // Listen for incoming clients
-  WiFiClient client = server.available();   
-  
-  // Client Connected
-  if (client) {                             
-    // Set timer references
-    currentTime = millis();
-    previousTime = currentTime;
-    
-    // Print to serial port
-    Serial.println("New Client."); 
-    
-    // String to hold data from client
-    String currentLine = ""; 
-    
-    // Do while client is cponnected
-    while (client.connected() && currentTime - previousTime <= timeoutTime) { 
-      currentTime = millis();
-      if (client.available()) {             // if there's bytes to read from the client,
-        char c = client.read();             // read a byte, then
-        Serial.write(c);                    // print it out the serial monitor
-        header += c;
-        if (c == '\n') {                    // if the byte is a newline character
-          // if the current line is blank, you got two newline characters in a row.
-          // that's the end of the client HTTP request, so send a response:
-          if (currentLine.length() == 0) {
-        
-            // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK) and a content-type
-            client.println("HTTP/1.1 200 OK");
-            client.println("Content-type:text/html");
-            client.println("Connection: close");
-            client.println();
+void loop() {
+    WiFiClient client = server.available();
+    if (client) {
+        while (client.connected()) {
+        if (client.available()) {
+            std::vector<int> array = parseArray(client);
+            int x = array[0];
+            int y = array[1];
+            int w = array[2];
+            int h = array[3];
 
-            // Display the HTML web page
-            
-            // HTML Header
-            client.println("<!DOCTYPE html><html>");
-            client.println("<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
-            client.println("<link rel=\"icon\" href=\"data:,\">");
-            
-            // CSS - Modify as desired
-            client.println("<style>body { text-align: center; font-family: \"Trebuchet MS\", Arial; margin-left:auto; margin-right:auto; }");
-            client.println(".slider { -webkit-appearance: none; width: 300px; height: 25px; border-radius: 10px; background: #ffffff; outline: none;  opacity: 0.7;-webkit-transition: .2s;  transition: opacity .2s;}");
-            client.println(".slider::-webkit-slider-thumb {-webkit-appearance: none; appearance: none; width: 35px; height: 35px; border-radius: 50%; background: #ff3410; cursor: pointer; }</style>");
-            
-            // Get JQuery
-            client.println("<script src=\"https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js\"></script>");
-                     
-            // Page title
-            client.println("</head><body style=\"background-color:#70cfff;\"><h1 style=\"color:#ff3410;\">Servo Control</h1>");
-            
-            // Position display
-            client.println("<h2 style=\"color:#ffffff;\">Position: <span id=\"servoPos\"></span>&#176;</h2>"); 
-                     
-            // Slider control
-            client.println("<input type=\"range\" min=\"0\" max=\"180\" class=\"slider\" id=\"servoSlider\" onchange=\"servo(this.value)\" value=\""+valueString+"\"/>");
-            
-            // Javascript
-            client.println("<script>var slider = document.getElementById(\"servoSlider\");");
-            client.println("var servoP = document.getElementById(\"servoPos\"); servoP.innerHTML = slider.value;");
-            client.println("slider.oninput = function() { slider.value = this.value; servoP.innerHTML = this.value; }");
-            client.println("$.ajaxSetup({timeout:1000}); function servo(pos) { ");
-            client.println("$.get(\"/?value=\" + pos + \"&\"); {Connection: close};}</script>");
-            
-            // End page
-            client.println("</body></html>");     
-            
-            // GET data
-            if(header.indexOf("GET /?value=")>=0) {
-              pos1 = header.indexOf('=');
-              pos2 = header.indexOf('&');
-              
-              // String with motor position
-              valueString = header.substring(pos1+1, pos2);
-              
-              // Move servo into position
-              //ToDo:
+            std::vector<int> servo_rotations = mapToServoRotation(x, y, w, h);
 
-              // Determine PWM pulse width
-              pwm0 = map(valueString.toInt(), 0, 180, SERVOMIN, SERVOMAX);
-              // Write to PCA9685
-              pca9685.setPWM(SER0, 0, pwm0);
-              // Print to serial monitor
-              Serial.print("Motor 0 = ");
-              Serial.println(valueString.toInt());
-              
-              // Print value to serial monitor
-              Serial.print("Val =");
-              Serial.println(valueString); 
-            }         
-            // The HTTP response ends with another blank line
-            client.println();
-            
-            // Break out of the while loop
-            break;
-          
-          } else { 
-            // New lline is received, clear currentLine
-            currentLine = "";
-          }
-        } else if (c != '\r') {  // if you got anything else but a carriage return character,
-          currentLine += c;      // add it to the end of the currentLine
+            vert = map(servo_rotations[0], 0,180, SERVOMIN, SERVOMAX);
+            hor = map(servo_rotations[1], 0,180, SERVOMIN, SERVOMAX);
+
+            pwm.setPWM(0, 0, hor);
+            pwm.setPWM(1, 0, vert);
+            blinkCycle();
+
+
         }
-      }
+        }
+        client.stop();
     }
-    // Clear the header variable
-    header = "";
-    // Close the connection
-    client.stop();
-    Serial.println("Client disconnected.");
-    Serial.println("");
-  }
+    blinkCycle();
+    recvOneChar();
+    showNewData();
+
+    hor = map(turnTo, 0,180, SERVOMIN, SERVOMAX);
+
+    pwm.setPWM(0, 0, hor);
+    pwm.setPWM(1, 0, vert);
+}
+
+union byteToInt {
+    byte array[4];
+    int val;
+};
+
+std::vector<int> parseArray(WiFiClient client) {
+    std::vector<int> array = {0, 0, 0, 0};
+    
+    byteToInt bti;
+
+    for (int i = 0; i < 4; i++)
+    {
+        for (int j = 3; j >= 0; j--)
+        {
+            bti.array[j] = client.read();
+        }
+
+        array[i] = bti.val;
+    }
+    
+    Serial.print("x,y,w,h = ");
+
+    for (int i = 0; i < 4; i++)
+    {
+        Serial.print(array[i]);
+        Serial.print(" ");
+    }
+
+    Serial.print("\n");
+    client.flush();
+
+    return array;
+}
+
+
+std::vector<int> mapToServoRotation(int y, int x, int w, int h) {
+    std::vector<int> servo_rotations = {0, 0};
+    float x_ratio = (float)y / (float)w;
+    float y_ratio = (float)x / (float)h;
+
+    
+
+    servo_rotations[0] = (int)map(x,0,h,108,54);
+    servo_rotations[1] = (int)map(y,0,w,90,0);
+
+    Serial.println("Servorot:");
+    Serial.println(servo_rotations[0]);
+    Serial.println(servo_rotations[1]);
+
+    return servo_rotations;
+}
+
+
+void blinkCycle() {
+    static unsigned long previousMillis = 0;
+    unsigned long currentMillis = millis();
+    if (currentMillis - previousMillis >= 5000) {
+
+        int open = map(0, 0,180, SERVOMIN, SERVOMAX);
+        int close = map(45, 0,180, SERVOMIN, SERVOMAX);
+        
+        pwm.setPWM(2, 0, open);
+        pwm.setPWM(3, 0, close);
+        delay(100);
+
+        pwm.setPWM(2, 0, close);
+        pwm.setPWM(3, 0, open);    
+        delay(150);
+
+        pwm.setPWM(2, 0, open);
+        pwm.setPWM(3, 0, close);
+
+
+        Serial.println("Blink");
+        previousMillis = currentMillis;
+    }
+}
+
+void recvOneChar() {
+    if (Serial.available() > 0) {
+        received = Serial.read();
+        newData = true;
+    }
+}
+
+void showNewData() {
+    if (newData == true) {
+        switch (received)
+        {
+        case 51:
+            turnTo = 0;
+            break;
+        case 52:
+            turnTo = 18;
+            break;
+        case 53:
+            turnTo = 18 * 2;
+            break;
+        case 54:
+            turnTo = 18 * 3;
+            break;
+        case 55:
+            turnTo = 18 * 4;
+            break;
+        case 56:
+            turnTo = 18 * 5;
+            break;
+        case 57:
+            turnTo = 18 * 6;
+            break;
+        case 58:
+            turnTo = 18 * 7;
+            break;
+        case 59:
+            turnTo = 18 * 8;
+            break;
+        case 48:
+            turnTo = 18 * 9;
+            break;
+        
+        default:
+            break;
+        }
+        Serial.println(received);
+        newData = false;
+    }
 }
